@@ -144,23 +144,30 @@ overrides:
   # tooling (@prisma/dev); patched in 1.4.2.
   valibot: 1.4.2
 
-# GHSA-p2fr-6hmx-4528: @better-auth/oauth-provider 1.6.23 (used for the MCP OAuth flow, ENG-1055)
-# fails to bind access-token audiences to their authorization grant (RFC 8707 resource-indicator
-# confusion) — a client can complete a normal authorization flow and then request a JWT scoped to a
-# resource server the authorization never covered. No fix exists on the 1.6.x line; the patch ships
-# only in the still-unreleased 1.7.0 line (beta.4+, currently at rc.2), and adopting it is a breaking
-# migration: `validAudiences` is replaced by a resources/oauthClientResource model,
-# customAccessTokenClaims.resource becomes a resources[] array, token validity becomes session-bound,
-# and a mandatory schema migration is required (`npx auth@rc generate` + `migrate`, or generated schema
-# applied through the project's DB migration tooling). That is not something to pull in
-# via an unattended dependency-audit bump, and 1.7.0 isn't a stable release yet.
-# Our config (apps/web/modules/auth/lib/mcp-oauth-provider-options.ts) sets a single-entry
-# validAudiences (the MCP resource URL) and never issues tokens against more than one resource
-# server, so the cross-audience confusion this advisory targets has no second audience to escalate
-# into today. Residual risk accepted until Better Auth ships 1.7.0 stable; the upgrade (oauth-provider
-# config rewrite + DB migration) should land as its own dedicated PR, not folded into an audit sweep.
-# No override is pinned here since there is no non-breaking version to pin to; `pnpm audit` will keep
-# flagging this until the direct dependency itself is bumped.
+# === Accepted risk, no override (pnpm audit will keep flagging this) ===
+# ENG-1703 / GHSA-p2fr-6hmx-4528 (Dependabot #613, closed Done — same conclusion as here):
+# @better-auth/oauth-provider 1.6.23 (used for the MCP OAuth flow, ENG-1055) fails to bind
+# access-token audiences to their authorization grant (RFC 8707 resource-indicator confusion) — a
+# client can complete a normal authorization flow and then request a JWT scoped to a resource server
+# the authorization never covered. No fix exists on the 1.6.x line (latest is 1.6.25, still in range);
+# the patch ships only in the still-unreleased 1.7.0 line (beta.4+, currently at rc.2).
+# Two independent mitigations already apply here, so this deployment isn't exposed today:
+# - apps/web/modules/auth/lib/mcp-oauth-provider-options.ts sets a single-entry validAudiences (the
+#   MCP resource URL), so there is no second audience for a client to escalate into.
+# - apps/web/modules/mcp/auth.ts pins `audience: getMcpResourceUrl()` on the resource server's own
+#   verifyAccessToken call. This is the advisory's other documented workaround and the durable one:
+#   it keeps holding even if a second audience is ever added, unlike the validAudiences argument
+#   above. (Neither invariant is asserted by a test today.)
+# Upgrading is still a breaking migration, but smaller than the general 1.7 upgrade guide implies for
+# this codebase specifically: `validAudiences` is replaced by a resources/oauthClientResource model
+# and token validity becomes session-bound, but customAccessTokenClaims.resource doesn't apply to us
+# (ours only returns email/name), and the schema migration is largely a no-op here — migration
+# 20260702093000_add_better_auth_oauth_provider already created `oauthClient` (not `oauthApplication`)
+# and an `oauthAccessToken.token` column (not `.accessToken`), and we have no SCIM. The real blocker is
+# that @better-auth/oauth-provider@1.7.0-rc.2 declares `better-auth` and `@better-auth/core` as
+# `^1.7.0-rc.2` peers, making this a coupled auth-core upgrade touching login/2FA/SSO/sessions, not a
+# plugin-only bump — that's what needs its own reviewed PR once Better Auth ships 1.7.0 stable, rather
+# than folding it into an audit sweep or an unattended dependency-only bump.
 
 autoInstallPeers: true
 linkWorkspacePackages: true
