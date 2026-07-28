@@ -464,7 +464,8 @@ export const listFeedbackRecordsAction = authenticatedActionClient
 
       const result = await listFeedbackRecords(params);
       if (result.error || !result.data) {
-        logger.warn({ error: result.error }, "Failed to list feedback records");
+        // listFeedbackRecords already logged this with the full error and a Hub-unreachable hint;
+        // re-logging here only produced a second, thinner line per request.
         throw new Error(result.error?.message ?? "Failed to load feedback records");
       }
 

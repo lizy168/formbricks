@@ -208,7 +208,7 @@ export const listFeedbackRecords = async (
     const data = await client.feedbackRecords.list(params);
     return { data, error: null };
   } catch (err) {
-    logger.warn({ err }, "Hub: listFeedbackRecords failed");
+    logger.warn({ err, hint: getHubErrorHint(err) }, "Hub: listFeedbackRecords failed");
     const status = getErrorStatus(err);
     const message = getErrorMessage(err);
     return { data: null, error: { status, message, detail: message } };
