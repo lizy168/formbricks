@@ -151,7 +151,8 @@ overrides:
 # only in the still-unreleased 1.7.0 line (beta.4+, currently at rc.2), and adopting it is a breaking
 # migration: `validAudiences` is replaced by a resources/oauthClientResource model,
 # customAccessTokenClaims.resource becomes a resources[] array, token validity becomes session-bound,
-# and a mandatory `npx auth migrate` schema migration is required. That is not something to pull in
+# and a mandatory schema migration is required (`npx auth@rc generate` + `migrate`, or generated schema
+# applied through the project's DB migration tooling). That is not something to pull in
 # via an unattended dependency-audit bump, and 1.7.0 isn't a stable release yet.
 # Our config (apps/web/modules/auth/lib/mcp-oauth-provider-options.ts) sets a single-entry
 # validAudiences (the MCP resource URL) and never issues tokens against more than one resource
