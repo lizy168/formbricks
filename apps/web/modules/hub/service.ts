@@ -30,6 +30,7 @@ import {
   createHubResultFromError,
   getErrorMessage,
   getErrorStatus,
+  getHubErrorHint,
 } from "./utils";
 
 export type HubFeedbackRecordResult = {
@@ -55,7 +56,10 @@ export const createFeedbackRecord = async (
     const data = await client.feedbackRecords.create(input);
     return { data, error: null };
   } catch (err) {
-    logger.warn({ err, fieldId: input.field_id }, "Hub: createFeedbackRecord failed");
+    logger.warn(
+      { err, fieldId: input.field_id, hint: getHubErrorHint(err) },
+      "Hub: createFeedbackRecord failed"
+    );
     return createHubResultFromError(err);
   }
 };
@@ -274,7 +278,10 @@ export const createFeedbackRecordsBatch = async (
         const data = await client.feedbackRecords.create(input);
         return { data, error: null as HubFeedbackRecordResult["error"] };
       } catch (err) {
-        logger.warn({ err, fieldId: input.field_id }, "Hub: createFeedbackRecord failed");
+        logger.warn(
+          { err, fieldId: input.field_id, hint: getHubErrorHint(err) },
+          "Hub: createFeedbackRecord failed"
+        );
         return createHubResultFromError<FeedbackRecordData>(err);
       }
     })
