@@ -166,6 +166,10 @@ export const SignupForm = ({
           // cannot be used to probe which invites exist.
           toast.error(t("auth.invite.invite_not_found_description"));
         } else {
+          // SIGNUP_DISABLED_ERROR_CODE lands here deliberately. On an instance with sign-up closed
+          // this form never renders without a valid invite (signup/page.tsx 404s), and a valid invite
+          // returns before that check — so the code is only ever seen by something POSTing the action
+          // directly, for which a stable machine-readable code beats a translated sentence.
           toast.error(errorMessage);
         }
         return;

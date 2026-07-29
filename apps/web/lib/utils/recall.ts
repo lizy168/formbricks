@@ -220,13 +220,62 @@ export const headlineToRecall = (
   return text;
 };
 
+/** The trailing `\#` a slash-wrapped recall tag ends with. */
+const RECALL_SLASH_SUFFIX = String.raw`\#`;
+
+/**
+ * A response value is `string | number | string[] | Record<string, string>`. Arrays and dates are
+ * already normalized above, but matrix and address answers arrive as records, which would coerce to
+ * `[object Object]` if handed to `String()`.
+ */
+const stringifyRecallValue = (value: TResponseDataValue): string => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.filter(Boolean).join(", ");
+  if (value) return Object.values(value).filter(Boolean).join(", ");
+  return "";
+};
+
+const HTML_ENTITIES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/**
+ * Encodes a string so it renders as literal text in HTML, in element content or a quoted attribute.
+ *
+ * Encoding, not sanitizing: `sanitize-html` and DOMPurify parse markup and *remove* what isn't allowed,
+ * which is the wrong tool here — a respondent who answers `<b>bold</b>` should see that text in the
+ * email, not have it silently dropped. Escaping is also what makes the value inert regardless of where
+ * the surrounding template puts it.
+ *
+ * Single pass over the five characters rather than chained `replaceAll`s, so `&` cannot be
+ * double-encoded if someone reorders the entries — with sequential replacements, moving the `&` rule
+ * after the others turns `<` into `&amp;lt;`.
+ */
+const escapeHtml = (value: string): string => value.replaceAll(/[&<>"']/g, (char) => HTML_ENTITIES[char]);
+
+/**
+ * @param escapeValues HTML-escape each substituted value before splicing it in. Off by default because
+ * most callers render the result through React, which escapes for them — escaping here too would show
+ * literal `&amp;`. Turn it on when the result goes into raw HTML, e.g. the follow-up email body.
+ *
+ * The recalled value is a respondent's answer, i.e. data, and must never become markup. Sanitizing the
+ * *combined* string afterwards is not a substitute: a sanitizer cannot tell the survey author's
+ * intended markup from markup a respondent injected, so an allowlist that legitimately permits
+ * `<a href>` in an author-written body will equally pass off an anchor spliced in from an answer.
+ */
 export const parseRecallInfo = (
   text: string,
   responseData?: TResponseData,
   variables?: TResponseVariables,
   withSlash: boolean = false,
   locale: string = "en-US",
-  dateFormats?: TSurveyDateFormatMap
+  dateFormats?: TSurveyDateFormatMap,
+  escapeValues: boolean = false
 ) => {
   let modifiedText = text;
   const questionIds = responseData ? Object.keys(responseData) : [];
@@ -273,10 +322,13 @@ export const parseRecallInfo = (
     }
 
     // Replace the recall tag with the value
+    const substitutedValue = escapeValues ? escapeHtml(stringifyRecallValue(value)) : (value as string);
+    // Replacer functions, not replacement strings: `$&`, `` $` `` and friends are special in a
+    // replacement string, so an answer containing them would splice part of the pattern back in.
     if (withSlash) {
-      modifiedText = modifiedText.replace(recallInfo, "#/" + value + "\\#");
+      modifiedText = modifiedText.replace(recallInfo, () => `#/${substitutedValue}${RECALL_SLASH_SUFFIX}`);
     } else {
-      modifiedText = modifiedText.replace(recallInfo, value as string);
+      modifiedText = modifiedText.replace(recallInfo, () => substitutedValue);
     }
   }
 
