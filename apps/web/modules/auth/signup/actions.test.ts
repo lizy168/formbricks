@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { SIGNUP_EMAIL_DOMAIN_BLOCKED_ERROR_CODE } from "@formbricks/types/errors";
+import {
+  INVITE_TOKEN_INVALID_ERROR_CODE,
+  SIGNUP_EMAIL_DOMAIN_BLOCKED_ERROR_CODE,
+} from "@formbricks/types/errors";
 import { verifyInviteToken } from "@/lib/jwt";
+import { createMembership } from "@/lib/membership/service";
 import { capturePostHogEvent } from "@/lib/posthog";
 import { getUserByEmail } from "@/lib/user/service";
 import { auth } from "@/modules/auth/lib/auth";
@@ -14,6 +18,7 @@ import { createUserAction } from "./actions";
 vi.mock("@formbricks/logger", () => ({
   logger: {
     error: vi.fn(),
+    warn: vi.fn(),
   },
 }));
 
@@ -91,7 +96,9 @@ describe("createUserAction — signup verification email callbackURL", () => {
     notificationSettings: { alert: {} },
   };
 
-  const baseInput = { name: "Ada", email: "Ada@Example.com", password: "Password123!" };
+  // Mirrors what signup-form.tsx actually posts: it always sends the field, as `inviteToken ?? ""`,
+  // so an uninvited sign-up arrives with an empty string rather than undefined.
+  const baseInput = { name: "Ada", email: "Ada@Example.com", password: "Password123!", inviteToken: "" };
 
   const newCtx = () => ({ auditLoggingCtx: { organizationId: "", userId: "" } });
 
@@ -120,6 +127,7 @@ describe("createUserAction — signup verification email callbackURL", () => {
   });
 
   test("does not point the verification callback at /invite for invite signups (ENG-1527)", async () => {
+    vi.mocked(resolveInviteMatch).mockResolvedValue("valid");
     vi.mocked(verifyInviteToken).mockReturnValue({ inviteId: "invite-1", email: "ada@example.com" } as never);
     vi.mocked(getInvite).mockResolvedValue({
       id: "invite-1",
@@ -145,6 +153,53 @@ describe("createUserAction — signup verification email callbackURL", () => {
       },
     });
   });
+
+  // Regression: signup-form.tsx sends `inviteToken: inviteToken ?? ""`, so an uninvited sign-up arrives
+  // with an empty string. Guarding the "unusable invite" check on `!== undefined` rather than
+  // truthiness rejected every public sign-up with INVITE_TOKEN_INVALID_ERROR_CODE.
+  test.each(["", "   ", undefined])(
+    "treats %p as no invite and completes an ordinary sign-up",
+    async (inviteToken) => {
+      vi.mocked(resolveInviteMatch).mockResolvedValue("missing");
+
+      const result = await createUserAction({
+        ctx: newCtx(),
+        parsedInput: { ...baseInput, inviteToken },
+      } as never);
+
+      expect(result).toEqual({ success: true, nextStep: "verify_email" });
+      expect(auth.api.signUpEmail).toHaveBeenCalled();
+      // No invite means no membership grant — the org-creation path handles it instead.
+      expect(createMembership).not.toHaveBeenCalled();
+    }
+  );
+
+  // ENG-2071: an invite binds a role in an organization to one address. Accepting it on a valid
+  // signature alone meant a leaked or forwarded invite link could be redeemed with any address, at the
+  // invited role — up to owner.
+  test.each(["email_mismatch", "invalid_or_expired", "verification_error", "missing"] as const)(
+    "refuses to grant membership when the invite resolves as %s",
+    async (inviteMatch) => {
+      vi.mocked(resolveInviteMatch).mockResolvedValue(inviteMatch);
+      vi.mocked(verifyInviteToken).mockReturnValue({
+        inviteId: "invite-1",
+        email: "someone-else@example.com",
+      } as never);
+
+      await expect(
+        createUserAction({
+          ctx: newCtx(),
+          parsedInput: { ...baseInput, inviteToken: "invite-jwt-123" },
+        } as never)
+        // The stable code, not just "some error": the sign-up form maps this to localized copy, so a
+        // regression to a raw message would break the UI while still passing a bare toThrow().
+      ).rejects.toThrow(INVITE_TOKEN_INVALID_ERROR_CODE);
+
+      expect(createMembership).not.toHaveBeenCalled();
+      // Rejected before the account is written, so a bad token leaves no orphaned user behind.
+      expect(auth.api.signUpEmail).not.toHaveBeenCalled();
+    }
+  );
 
   // ENG-2091: with requireEmailVerification + autoSignIn:false, Better Auth does NOT throw on a
   // duplicate — it returns 200 with a SYNTHETIC user (generated id, nothing written). This suite used
@@ -189,7 +244,12 @@ describe("createUserAction — personal email domain block (Cloud)", () => {
     locale: "en-US",
     notificationSettings: { alert: {} },
   };
-  const blockedInput = { name: "Spammer", email: "spammer@gmail.com", password: "Password123!" };
+  const blockedInput = {
+    name: "Spammer",
+    email: "spammer@gmail.com",
+    password: "Password123!",
+    inviteToken: "",
+  };
   const newCtx = () => ({ auditLoggingCtx: { organizationId: "", userId: "" } });
 
   beforeEach(() => {
@@ -247,13 +307,17 @@ describe("createUserAction — personal email domain block (Cloud)", () => {
         ctx: newCtx(),
         parsedInput: { ...blockedInput, inviteToken: "invite-jwt-123" },
       } as never)
-    ).rejects.toThrow(SIGNUP_EMAIL_DOMAIN_BLOCKED_ERROR_CODE);
+      // Invite binding is checked before the domain gate, so a mismatched invite is rejected as an
+      // invalid invite rather than as a blocked domain (ENG-2071).
+    ).rejects.toThrow(INVITE_TOKEN_INVALID_ERROR_CODE);
     expect(auth.api.signUpEmail).not.toHaveBeenCalled();
   });
 
   test("blocks a personal-domain invite when the kill-switch is enabled", async () => {
     constantsOverrides.SIGNUP_DOMAIN_CHECK_ON_INVITES = true;
-    // Kill-switch on: the invite exemption isn't consulted at all, so resolveInviteMatch is irrelevant.
+    // A genuinely valid invite, so the binding check passes and the domain gate is what rejects:
+    // with the kill-switch on, the invite exemption isn't consulted at all.
+    vi.mocked(resolveInviteMatch).mockResolvedValue("valid");
 
     await expect(
       createUserAction({
