@@ -102,26 +102,45 @@ export const signInAuditDatabaseHook: NonNullable<
 };
 
 /**
+ * Better Auth embeds user email addresses in some log messages — `sign-up.mjs` logs
+ * `Sign-up attempt for existing email: <address>` on every duplicate sign-up, at `info`. Today
+ * `level: "warn"` suppresses that one, so nothing leaks; but the level is exactly what someone would
+ * raise while debugging a sign-up problem, and doing so would start writing customer addresses into
+ * our logs (and, at error level, into Sentry). Redacting here rather than relying on the level means
+ * raising it stays safe. The domain is kept — it is the part that carries diagnostic value.
+ *
+ * Applied to `message` before both the logger and the Sentry fallback, since a message with no Error
+ * arg is wrapped into one. (ENG-2091)
+ */
+const EMAIL_IN_MESSAGE = /[\w.!#$%&'*+/=?^`{|}~-]+@([\w-]+(?:\.[\w-]+)+)/g;
+
+export const redactEmailsInLogMessage = (message: unknown): unknown =>
+  typeof message === "string" ? message.replace(EMAIL_IN_MESSAGE, "[redacted]@$1") : message;
+
+/**
  * Route Better Auth's logger to @formbricks/logger and capture errors to Sentry in production —
  * replaces auth.ts's placeholder logger (and the route's Sentry.captureException on auth failures).
  * Normal auth failures (wrong password) log at `warn`, so only genuine internal errors reach Sentry.
  */
 export const betterAuthLogger: NonNullable<BetterAuthOptions["logger"]> = {
+  // Kept at "warn" so Better Auth's own info/debug chatter stays out of production logs. Raising it is
+  // now safe from a PII standpoint — see redactEmailsInLogMessage above.
   level: "warn",
   disableColors: true,
   log: (level, message, ...args) => {
     const contextLogger = logger.withContext({ source: "better-auth" });
+    const safeMessage = redactEmailsInLogMessage(message);
     if (level === "error") {
-      contextLogger.error(message);
+      contextLogger.error(safeMessage);
       if (SENTRY_DSN && IS_PRODUCTION) {
         // BA usually passes the Error as a trailing arg, but a couple of sites pass it as `message`.
         const cause = [...args, message].find((arg): arg is Error => arg instanceof Error);
-        Sentry.captureException(cause ?? new Error(`[better-auth] ${String(message)}`));
+        Sentry.captureException(cause ?? new Error(`[better-auth] ${String(safeMessage)}`));
       }
     } else if (level === "warn") {
-      contextLogger.warn(message);
+      contextLogger.warn(safeMessage);
     } else {
-      contextLogger.info(message);
+      contextLogger.info(safeMessage);
     }
   },
 };
