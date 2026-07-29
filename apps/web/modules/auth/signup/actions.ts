@@ -301,14 +301,13 @@ export const createUserAction = actionClient.inputSchema(ZCreateUserAction).acti
     await applyIPRateLimit(rateLimitConfigs.auth.signup);
     await verifyTurnstileIfConfigured(parsedInput.turnstileToken);
 
+    // Resolved once and reused by the domain gate and the next-step decision below, so the two cannot
+    // drift on what counts as a valid invite. Returns "missing" without any I/O when there is no token.
+    const inviteMatch = await resolveInviteMatch(parsedInput.inviteToken, parsedInput.email);
+
     // Formbricks Cloud only: reject personal/free/disposable email domains before any user is created.
     // Invited users are exempt unless SIGNUP_DOMAIN_CHECK_ON_INVITES is enabled.
-    if (
-      await isSignupEmailDomainBlocked(
-        parsedInput.email,
-        async () => (await resolveInviteMatch(parsedInput.inviteToken, parsedInput.email)) === "valid"
-      )
-    ) {
+    if (await isSignupEmailDomainBlocked(parsedInput.email, async () => inviteMatch === "valid")) {
       throw new InvalidInputError(SIGNUP_EMAIL_DOMAIN_BLOCKED_ERROR_CODE);
     }
 
@@ -383,6 +382,22 @@ export const createUserAction = actionClient.inputSchema(ZCreateUserAction).acti
 
     return {
       success: true,
+      // Where the form should send the user. Decided server-side so the disclosure rule lives with the
+      // data rather than in the client.
+      //
+      // "login_to_accept_invite" is only ever returned when the address already has an account AND the
+      // caller presented a VALID invite for that exact address — a signed JWT naming it, delivered to
+      // it. Telling that caller the account exists reveals nothing they don't already hold, and it is
+      // the only way out of the dead end they were previously left in: routed to "check your inbox" for
+      // an email that is never sent, in front of a resend button that no-ops for a verified address.
+      //
+      // Every other case gets "verify_email", identical for new and existing addresses, so a plain
+      // sign-up stays enumeration-safe. That screen's copy carries a generic "already have an account?
+      // log in" line instead (ENG-2091).
+      nextStep:
+        outcome.status === "already_existed" && inviteMatch === "valid"
+          ? ("login_to_accept_invite" as const)
+          : ("verify_email" as const),
     };
   })
 );
